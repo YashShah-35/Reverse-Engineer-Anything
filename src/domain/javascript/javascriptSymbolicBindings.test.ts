@@ -954,3 +954,24 @@ it("keeps a possibly repeated factory's native descriptor value unknown", () => 
   })();`);
   expect(value.kind).toBe("unknown");
 });
+
+it("bounds recursion when spreading a self-recursive call result and querying properties", () => {
+  const { resolver, values } = inspectFixture(
+    `function f(o) { const stay = f(o); return { ...stay, c: stay.sc.startsWith("k") }; }
+     inspect(f({}));`,
+    (bindings, node) => {
+      const obj = bindings.evaluate(node.arguments[0]);
+      const sc = bindings.property(obj, "sc");
+      const c = bindings.property(obj, "c");
+      const members = bindings.members(obj);
+      const unknownMembers = bindings.unknownMembers(obj);
+      expect(sc.kind).toBe("unknown");
+      expect(c.kind).toBe("unknown");
+      expect(members).toContain("c");
+      expect(unknownMembers).toBeGreaterThan(0);
+      return obj;
+    },
+  );
+  expect(values).toHaveLength(1);
+  expect(resolver.truncated).toBe(true);
+});
