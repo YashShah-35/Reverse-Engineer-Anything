@@ -203,6 +203,7 @@ export interface ArtifactReader {
     | "pyinstaller"
     | "dotnet-bundle"
     | "bun-standalone"
+    | "deno-standalone"
     | "node-sea"
     | "intel-hex"
     | "srec"
