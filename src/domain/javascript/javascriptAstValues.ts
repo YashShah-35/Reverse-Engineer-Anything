@@ -1,7 +1,20 @@
 import * as t from "@babel/types";
+
 import type { JavaScriptSemanticPrimitive } from "./javascriptSemanticValueTypes.js";
 import { SEMANTIC_EXPRESSION_DEPTH_LIMIT } from "./javascriptSemanticResourceLimits.js";
 import { semanticArrayIndex } from "./javascriptSemanticPropertyPaths.js";
+
+/** Computed definition keys use the surrounding evaluation environment. */
+export const javaScriptComputedDefinitionKey = (
+  parent: t.Node | undefined,
+  child: t.Node,
+): boolean =>
+  (t.isObjectMethod(parent) ||
+    t.isClassMethod(parent) ||
+    t.isClassProperty(parent) ||
+    t.isClassAccessorProperty(parent)) &&
+  parent.computed &&
+  parent.key === child;
 
 /** Type-only class fields neither initialize own slots nor shadow inherited members. */
 export const isRuntimeJavaScriptClassProperty = (
@@ -460,6 +473,28 @@ export const staticObjectProperty = (
   isNullish?: (node: t.Node) => boolean,
 ): StaticObjectProperty =>
   readStaticObjectProperty(staticObjectPropertySource(object, isNullish), name);
+
+/** Prove a literal's effective own member is a method, independent of its prototype. */
+export const staticObjectOwnMethodReader = (
+  object: t.Node,
+): ((name: string) => boolean) => {
+  if (!t.isObjectExpression(object)) return () => false;
+  const methods = new Map<string, boolean>();
+  const members = staticObjectMembers(object, 0);
+  for (let index = members.length - 1; index >= 0; index--) {
+    const member = members[index]!;
+    if (member.kind === "prototype-setter") continue;
+    if (member.kind === "unknown") break;
+    if (member.kind !== "property") continue;
+    if (member.key === null) break;
+    if (!methods.has(member.key))
+      methods.set(
+        member.key,
+        t.isObjectMethod(member.property) && member.property.kind === "method",
+      );
+  }
+  return (name) => methods.get(name) === true;
+};
 
 export type StaticObjectPropertyNames =
   | { readonly status: "missing" | "dynamic" }
