@@ -554,4 +554,26 @@ describe("JavaScript application cleanup diagnostics", () => {
       partialObservation,
     });
   });
+
+  it("analyzes a source spreading a self-recursive call result and calling property methods", async () => {
+    const root = await createTestTempDirectory("rea-js-recursive-spread-");
+    await writeFile(
+      join(root, "app.js"),
+      'function f(o) { const stay = f(o); return { ...stay, c: stay.sc.startsWith("k") }; }\n',
+    );
+    const result = await analyzeJavaScriptApplication({
+      input_path: root,
+      format: "directory",
+      source_paths: ["app.js"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    const normalized = javascriptApplicationAnalysisResultSchema.parse(
+      result.value.normalized_result,
+    );
+    expect(normalized.statistics).toMatchObject({
+      parsed_javascript_files: 1,
+      parse_failures: 0,
+    });
+  });
 });
