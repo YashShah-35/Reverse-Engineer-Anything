@@ -30,6 +30,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import { semanticKnownArrayIterationAt } from "./javascriptSemanticReferenceSources.js";
+import { semanticOpaqueBindingReadMayHaveChanged } from "./javascriptSemanticOpaqueEffects.js";
 
 // Match the complete Rolldown runtime operations, including its live getters.
 // Names and formatting are irrelevant; lexical roles, operators and keys are not.
@@ -517,40 +518,9 @@ export const createSemanticModuleInterop = (
     return result;
   };
 
-  const origin = (
+  const twoInitializerOrigin = (
     binding: JavaScriptSemanticBindingState,
   ): InteropOrigin | undefined => {
-    const single = semanticStableInitializer(binding, state);
-    if (single !== undefined) {
-      if (
-        !single.projection.every(
-          (key): key is string => typeof key === "string",
-        )
-      )
-        return undefined;
-      const converted = callOrigin(single.node);
-      if (
-        converted?.origin.importedPath.length === 0 &&
-        single.projection[0] === "default" &&
-        !converted.defaultIsModule
-      )
-        return undefined;
-      const result =
-        converted === undefined
-          ? undefined
-          : {
-              ...converted,
-              origin: {
-                ...converted.origin,
-                importedPath: [
-                  ...converted.origin.importedPath,
-                  ...single.projection,
-                ],
-              },
-            };
-      if (result !== undefined) origins.set(binding.bindingId, result);
-      return result;
-    }
     const [initial, converted] = binding.initializers;
     if (
       binding.definitions.length !== 2 ||
@@ -600,13 +570,127 @@ export const createSemanticModuleInterop = (
     if (required === undefined || required.importedPath.length !== 0)
       return undefined;
     if (convertedCall === undefined) return undefined;
-    const result = {
+    return {
       origin: required,
       dependencies: convertedCall.dependencies,
       defaultIsModule: convertedCall.defaultIsModule,
     };
-    origins.set(binding.bindingId, result);
-    return result;
+  };
+
+  const origin = (
+    binding: JavaScriptSemanticBindingState,
+  ): InteropOrigin | undefined => {
+    const cached = origins.get(binding.bindingId);
+    if (cached !== undefined) return cached;
+
+    let currentBinding: JavaScriptSemanticBindingState | undefined = binding;
+    const visited = new Set<string>();
+    const steps: {
+      binding: JavaScriptSemanticBindingState;
+      segments: readonly string[];
+    }[] = [];
+    let baseOrigin: InteropOrigin | undefined;
+
+    while (currentBinding !== undefined) {
+      const alreadyCached = origins.get(currentBinding.bindingId);
+      if (alreadyCached !== undefined) {
+        baseOrigin = alreadyCached;
+        break;
+      }
+      if (visited.has(currentBinding.bindingId)) return undefined;
+      visited.add(currentBinding.bindingId);
+
+      const single = semanticStableInitializer(currentBinding, state);
+      if (single !== undefined) {
+        if (
+          !single.projection.every(
+            (key): key is string => typeof key === "string",
+          )
+        )
+          return undefined;
+        const converted = callOrigin(single.node);
+        if (converted !== undefined) {
+          if (
+            converted.origin.importedPath.length === 0 &&
+            single.projection[0] === "default" &&
+            !converted.defaultIsModule
+          )
+            return undefined;
+          baseOrigin = {
+            ...converted,
+            origin: {
+              ...converted.origin,
+              importedPath: [
+                ...converted.origin.importedPath,
+                ...(single.projection as readonly string[]),
+              ],
+            },
+          };
+          break;
+        }
+        const { root, members } = electronMemberPath(single.node);
+        if (
+          !t.isIdentifier(root) ||
+          !members.every((member): member is string => member !== null)
+        )
+          return undefined;
+        const targetBinding = resolveSemanticBindingState(
+          state,
+          root,
+          root.name,
+        );
+        if (targetBinding === undefined || targetBinding === currentBinding)
+          return undefined;
+        if (
+          state.opaqueEffects.byScope.size > 0 &&
+          semanticOpaqueBindingReadMayHaveChanged(targetBinding, root, state)
+        )
+          return undefined;
+        steps.push({
+          binding: currentBinding,
+          segments: [
+            ...(members as readonly string[]),
+            ...(single.projection as readonly string[]),
+          ],
+        });
+        currentBinding = targetBinding;
+        continue;
+      }
+
+      const twoInit = twoInitializerOrigin(currentBinding);
+      if (twoInit !== undefined) {
+        baseOrigin = twoInit;
+        break;
+      }
+      return undefined;
+    }
+
+    if (baseOrigin === undefined) return undefined;
+    origins.set(currentBinding!.bindingId, baseOrigin);
+
+    let currentOrigin = baseOrigin;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const step = steps[i]!;
+      const firstSegment = step.segments[0];
+      if (
+        currentOrigin.origin.importedPath.length === 0 &&
+        firstSegment === "default" &&
+        !currentOrigin.defaultIsModule
+      )
+        return undefined;
+      currentOrigin = {
+        ...currentOrigin,
+        origin: {
+          ...currentOrigin.origin,
+          importedPath: [
+            ...currentOrigin.origin.importedPath,
+            ...step.segments,
+          ],
+        },
+      };
+      origins.set(step.binding.bindingId, currentOrigin);
+    }
+    return currentOrigin;
   };
   const invalidatedOrigin = (record: InteropOrigin | undefined): boolean =>
     record?.dependencies.some(({ path, capturedAt }) => {
